@@ -1,17 +1,27 @@
 import ast
+import base64
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
+from urllib.parse import parse_qs, urlencode
 
 import streamlit as st
 
 # --- Configuration ---
 TIMEOUT_SECONDS = 600  # 10 minutes
+
+# Global process reference for stopping renders
+if "current_process" not in st.session_state:
+    st.session_state.current_process = None
+if "render_active" not in st.session_state:
+    st.session_state.render_active = False
 
 # Known Manim Scene base classes
 SCENE_BASE_CLASSES = {
@@ -47,10 +57,10 @@ st.markdown(
         max-width: 1200px;
     }
     body, div, p, label, input, textarea {
-        font-family: 'Manrope', sans-serif;
+        font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
     }
     h1, h2, h3 {
-        font-family: 'Playfair Display', serif;
+        font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
         font-weight: 700;
         color: #1f2a37;
     }
@@ -79,6 +89,117 @@ st.markdown(
         box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
         background-color: white;
         border-radius: 12px;
+        transition: all 0.3s ease;
+    }
+    div[data-testid="stExpander"]:hover {
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.12);
+        transform: translateY(-2px);
+    }
+    div[data-testid="stExpander"][data-state="open"] {
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.15);
+    }
+    /* Success/Error message padding */
+    .stAlert {
+        padding: 1rem 1.5rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    /* Video container separation */
+    .stVideo {
+        margin: 1.5rem 0;
+        padding: 1rem;
+        background-color: #f8f9fa;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    }
+    /* Download button styling */
+    .stDownloadButton {
+        margin-top: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    /* Selectbox spacing */
+    .stSelectbox {
+        margin-bottom: 1.5rem;
+    }
+    /* Section dividers */
+    hr {
+        margin: 2rem 0;
+        border: none;
+        border-top: 2px solid #e5e7eb;
+    }
+    /* Responsive breakpoints */
+    @media (max-width: 768px) {
+        .main .block-container {
+            padding-top: 1rem;
+            padding-bottom: 1.5rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+        .stButton>button {
+            padding: 0.5rem 1.5rem;
+            font-size: 14px;
+        }
+        h1 {
+            font-size: 2rem !important;
+        }
+        h2 {
+            font-size: 1.5rem !important;
+        }
+    }
+    @media (max-width: 480px) {
+        .main .block-container {
+            padding: 0.5rem;
+        }
+        h1 {
+            font-size: 1.5rem !important;
+        }
+        h2 {
+            font-size: 1.2rem !important;
+        }
+    }
+    /* Button disabled state */
+    .stButton>button:disabled {
+        background: linear-gradient(135deg, #cccccc, #999999);
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+    /* Button loading state (when rendering) */
+    .stButton>button[data-loading="true"] {
+        background: linear-gradient(135deg, #ffa500, #ff8c00);
+        cursor: wait;
+    }
+    .stButton>button[data-loading="true"]::after {
+        content: " ⏳";
+    }
+    /* Dark mode support */
+    @media (prefers-color-scheme: dark) {
+        .stApp {
+            background: radial-gradient(circle at 10% 20%, rgba(30, 30, 50, 0.9), transparent 50%),
+                        linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+            color: #e4e4e7;
+        }
+        h1, h2, h3 {
+            color: #f4f4f5;
+        }
+        .stTextArea textarea {
+            background-color: #27272a;
+            border: 1px solid #3f3f46;
+            color: #e4e4e7;
+        }
+        div[data-testid="stExpander"] {
+            background-color: #27272a;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+        }
+        .stVideo {
+            background-color: #27272a;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        .stAlert {
+            background-color: #27272a;
+        }
+        hr {
+            border-top: 2px solid #3f3f46;
+        }
     }
     </style>
     """,
@@ -129,12 +250,13 @@ def find_video_file(output_dir: Path, output_name: str = "output.mp4") -> Path |
 
 
 def get_quality_flag(quality_label: str) -> str:
+    """Extract quality flag from label string."""
     mapping = {
-        "Low (480p, Fast)": "-ql",
-        "Medium (720p, Standard)": "-qm",
-        "High (1080p, HD)": "-qh",
-        "Extra High (1440p)": "-qp",
-        "4K (2160p)": "-qk",
+        "Low (480p, Fast) - ~10s, 1-2 MB": "-ql",
+        "Medium (720p, Standard) - ~30s, 3-5 MB": "-qm",
+        "High (1080p, HD) - ~1min, 8-12 MB": "-qh",
+        "Extra High (1440p) - ~2min, 15-25 MB": "-qp",
+        "4K (2160p) - ~5min, 30-50 MB": "-qk",
     }
     return mapping.get(quality_label, "-qm")
 
@@ -168,21 +290,122 @@ def extract_scene_classes(source_code: str) -> list[str]:
 
 
 def count_animations(source_code: str) -> int:
-    """Count the number of self.play() and self.wait() calls in the code."""
-    # Count self.play( and self.wait( calls
-    play_count = len(re.findall(r"self\.play\s*\(", source_code))
-    wait_count = len(re.findall(r"self\.wait\s*\(", source_code))
-    return max(play_count + wait_count, 1)  # At least 1 to avoid division by zero
+    """Count the number of self.play() and self.wait() calls in the code more accurately."""
+    # Parse the AST to count method calls more accurately
+    try:
+        tree = ast.parse(source_code)
+        play_count = 0
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                # Check if it's a method call on self
+                if isinstance(node.func, ast.Attribute):
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "self":
+                        # Count play, wait, add, and other animation methods
+                        if node.func.attr in ["play", "wait", "add", "remove"]:
+                            play_count += 1
+
+        return max(play_count, 1)  # At least 1 to avoid division by zero
+    except:
+        # Fallback to regex if AST parsing fails
+        play_count = len(re.findall(r"self\.play\s*\(", source_code))
+        wait_count = len(re.findall(r"self\.wait\s*\(", source_code))
+        return max(play_count + wait_count, 1)
 
 
 def ensure_manim_import(code: str) -> str:
-    """Ensures the code has manim import if it uses manim classes."""
-    if "from manim import" in code or "import manim" in code:
+    """
+    Ensures the code has manim import if it uses manim classes.
+    Smarter detection using AST to avoid duplicate imports.
+    """
+    try:
+        # Parse the code to check for existing imports
+        tree = ast.parse(code)
+        has_manim_import = False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if 'manim' in alias.name:
+                        has_manim_import = True
+                        break
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and 'manim' in node.module:
+                    has_manim_import = True
+                    break
+
+        if has_manim_import:
+            return code
+
+        # Check if code uses manim classes
+        manim_indicators = [
+            "Scene", "ThreeDScene", "MovingCameraScene",
+            "Circle", "Square", "Triangle", "Rectangle",
+            "Tex", "MathTex", "Text",
+            "Create", "Write", "FadeIn", "FadeOut",
+            "Transform", "ReplacementTransform",
+            "UP", "DOWN", "LEFT", "RIGHT",
+            "BLUE", "RED", "GREEN", "PINK", "YELLOW"
+        ]
+
+        # Use AST to find Name nodes
+        uses_manim = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in manim_indicators:
+                uses_manim = True
+                break
+
+        if uses_manim:
+            return "from manim import *\n\n" + code
+
         return code
-    manim_indicators = ["Scene", "Circle", "Square", "Tex", "MathTex", "Create", "Write"]
-    if any(indicator in code for indicator in manim_indicators):
-        return "from manim import *\n\n" + code
-    return code
+
+    except SyntaxError:
+        # Fallback to simple string check if AST parsing fails
+        if "from manim import" in code or "import manim" in code:
+            return code
+        manim_indicators = ["Scene", "Circle", "Square", "Tex", "MathTex", "Create", "Write"]
+        if any(indicator in code for indicator in manim_indicators):
+            return "from manim import *\n\n" + code
+        return code
+
+
+def format_code(code: str) -> str:
+    """Basic code formatting - validates syntax and normalizes whitespace."""
+    try:
+        # Parse to validate syntax
+        tree = ast.parse(code)
+
+        # Basic formatting: normalize line breaks and indentation
+        lines = code.split('\n')
+        formatted_lines = []
+
+        for line in lines:
+            # Remove trailing whitespace
+            line = line.rstrip()
+            if line:
+                formatted_lines.append(line)
+            else:
+                # Keep empty lines between blocks
+                if formatted_lines and formatted_lines[-1] != '':
+                    formatted_lines.append('')
+
+        # Remove multiple consecutive empty lines
+        result = []
+        prev_empty = False
+        for line in formatted_lines:
+            if line == '':
+                if not prev_empty:
+                    result.append(line)
+                prev_empty = True
+            else:
+                result.append(line)
+                prev_empty = False
+
+        return '\n'.join(result)
+    except SyntaxError:
+        # If code has syntax errors, return as-is
+        return code
 
 
 class RenderProgressTracker:
@@ -321,11 +544,21 @@ def run_manim_with_progress(
             bufsize=1,
             universal_newlines=True,
         )
-        
+
+        # Store process in session state for stop functionality
+        st.session_state.current_process = process
+        st.session_state.render_active = True
+
         start_time = time.time()
         last_progress = 0
-        
+
         while True:
+            # Check if user requested stop
+            if not st.session_state.render_active:
+                process.kill()
+                log_lines.append("\n[Render stopped by user]\n")
+                return (False, "".join(log_lines))
+
             # Check timeout
             elapsed = time.time() - start_time
             if elapsed > timeout:
@@ -364,48 +597,117 @@ def run_manim_with_progress(
             status_text.text("Render complete!")
         else:
             status_text.text("Render failed!")
-        
+
+        # Clear process reference
+        st.session_state.current_process = None
+        st.session_state.render_active = False
+
         return (return_code == 0, "".join(log_lines))
         
     except subprocess.TimeoutExpired:
         log_lines.append(f"\nProcess timed out after {timeout} seconds\n")
+        st.session_state.current_process = None
+        st.session_state.render_active = False
         raise
     except Exception as e:
         log_lines.append(f"\nException: {str(e)}\n")
+        st.session_state.current_process = None
+        st.session_state.render_active = False
         return (False, "".join(log_lines))
 
 
 # --- UI Layout ---
 
 with st.sidebar:
-    st.title("Settings")
+    st.title("⚙️ Settings")
+
+    # Video size control
+    video_width = st.slider(
+        "Video Preview Width (%)",
+        min_value=30,
+        max_value=100,
+        value=100,
+        step=10,
+        help="Adjust the width of the video preview"
+    )
+
+    st.markdown("")  # spacing
 
     quality = st.selectbox(
         "Render Quality",
         [
-            "Low (480p, Fast)",
-            "Medium (720p, Standard)",
-            "High (1080p, HD)",
-            "Extra High (1440p)",
-            "4K (2160p)",
+            "Low (480p, Fast) - ~10s, 1-2 MB",
+            "Medium (720p, Standard) - ~30s, 3-5 MB",
+            "High (1080p, HD) - ~1min, 8-12 MB",
+            "Extra High (1440p) - ~2min, 15-25 MB",
+            "4K (2160p) - ~5min, 30-50 MB",
         ],
         index=1,
+        help="Higher quality means better resolution but longer render time and larger file size.",
     )
 
     st.info(
         """
-    **Instructions:**
-    1. Paste your Manim code on the right.
-    2. Select the Scene class to render.
-    3. Click 'Render Scene'.
+**📖 Instructions:**
+
+1. Paste your Manim code below
+2. Select the Scene class to render
+3. Click 'Render Scene' to create your animation
+
+[📚 Manim Documentation](https://docs.manim.community/)
     """
     )
 
     st.markdown("---")
-    st.markdown("Made with Manim & Streamlit")
+    st.markdown("✨ Made with **Manim** 🎬 & **Streamlit** ⚡")
 
-st.title("Manim Render Studio")
-st.markdown("### Paste your code below and bring your math to life.")
+st.title("🎬 Manim Render Studio")
+st.markdown("## Paste your code below and bring your math to life.")
+
+# Keyboard shortcuts (Ctrl+Enter to render)
+st.markdown(
+    """
+    <script>
+    document.addEventListener('keydown', function(e) {
+        // Ctrl+Enter or Cmd+Enter to trigger render
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            // Find and click the render button
+            const buttons = window.parent.document.querySelectorAll('button');
+            for (let btn of buttons) {
+                if (btn.innerText.includes('Render Scene')) {
+                    btn.click();
+                    break;
+                }
+            }
+        }
+    });
+    </script>
+    <style>
+    /* Keyboard shortcut hint */
+    .shortcut-hint {
+        font-size: 0.85rem;
+        color: #6b7280;
+        margin-top: -0.5rem;
+        margin-bottom: 1rem;
+    }
+    </style>
+    <div class="shortcut-hint">💡 Tip: Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to render</div>
+    """,
+    unsafe_allow_html=True
+)
+
+# Load code from URL parameter if present
+try:
+    query_params = st.query_params
+    if "code" in query_params:
+        encoded_code = query_params["code"]
+        decoded_code = base64.b64decode(encoded_code).decode('utf-8')
+        if "code_input" not in st.session_state or st.session_state.code_input == default_code:
+            st.session_state.code_input = decoded_code
+            st.success("📥 Code loaded from shared link!")
+except Exception:
+    pass  # Ignore URL parameter errors
 
 # Default code with LaTeX example
 default_code = '''from manim import *
@@ -413,7 +715,7 @@ default_code = '''from manim import *
 class DemoScene(Scene):
     def construct(self):
         # LaTeX formula
-        formula = MathTex(r"e^{i\\pi} + 1 = 0", font_size=72)
+        formula = MathTex(r"e^{i\pi} + 1 = 0", font_size=72)
         formula.set_color(BLUE)
         
         # Title
@@ -431,7 +733,76 @@ class DemoScene(Scene):
         self.wait(0.5)
 '''
 
-code_input = st.text_area("Python Code", value=default_code, height=400)
+# Code editor header
+col_header1, col_header2, col_header3, col_header4 = st.columns([1.5, 1, 1, 1])
+with col_header1:
+    st.markdown("### 📝 Manim Scene Code")
+with col_header2:
+    if st.button("🔗 Share"):
+        st.session_state.show_share = True
+with col_header3:
+    if st.button("✨ Format"):
+        st.session_state.format_code = True
+with col_header4:
+    if st.button("🗑️ Clear"):
+        st.session_state.code_cleared = True
+
+# Initialize session state for code
+if "code_input" not in st.session_state:
+    st.session_state.code_input = default_code
+if "code_cleared" in st.session_state and st.session_state.code_cleared:
+    st.session_state.code_input = ""
+    st.session_state.code_cleared = False
+if "format_code" in st.session_state and st.session_state.format_code:
+    st.session_state.code_input = format_code(st.session_state.code_input)
+    st.session_state.format_code = False
+    st.success("✨ Code formatted!")
+
+# Show syntax highlighted preview option
+show_preview = st.checkbox("👁️ Show syntax-highlighted preview with line numbers", value=False)
+
+if show_preview:
+    # Split view: editor and preview side by side
+    col_edit, col_preview = st.columns([1, 1])
+    with col_edit:
+        st.caption("**Editor:**")
+        code_input = st.text_area(
+            "Code Editor",
+            value=st.session_state.code_input,
+            height=400,
+            label_visibility="collapsed",
+            key="code_editor"
+        )
+    with col_preview:
+        st.caption("**Preview (with syntax highlighting & line numbers):**")
+        st.code(st.session_state.code_input, language="python", line_numbers=True)
+else:
+    code_input = st.text_area(
+        "Code Editor",
+        value=st.session_state.code_input,
+        height=400,
+        label_visibility="collapsed",
+        key="code_editor"
+    )
+
+# Update session state
+if code_input != st.session_state.code_input:
+    st.session_state.code_input = code_input
+
+# Show share link if requested
+if "show_share" in st.session_state and st.session_state.show_share:
+    encoded_code = base64.b64encode(code_input.encode('utf-8')).decode('utf-8')
+    # Get current URL without query params
+    base_url = "http://localhost:8501"  # This will be replaced by actual URL in production
+    share_url = f"{base_url}?code={encoded_code}"
+
+    st.info("🔗 **Share this link to share your code:**")
+    st.code(share_url, language="text")
+    st.caption("⚠️ Note: The link contains your entire code encoded in the URL. Keep it safe if it contains sensitive information.")
+
+    if st.button("✅ Done"):
+        st.session_state.show_share = False
+        st.rerun()
 
 # Auto-detect scene classes
 scene_candidates = extract_scene_classes(code_input)
@@ -445,16 +816,29 @@ else:
         help="Could not auto-detect. Enter the class name manually.",
     )
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    render_button = st.button("Render Scene")
+st.markdown("---")
+
+# Show confirmation checkbox for complex scenes
+if code_input and len(code_input) > 500:
+    st.info("💡 This appears to be a complex scene. Rendering may take several minutes.")
+    confirm_render = st.checkbox("I understand and want to render this scene", value=True)
+else:
+    confirm_render = True
+
+render_button = st.button("🎬 Render Scene", use_container_width=False, disabled=not confirm_render)
 
 if render_button:
     if not code_input.strip():
-        st.error("Please enter some Manim code.")
+        st.error("⚠️ Please enter some Manim code.")
     elif not scene_name:
-        st.error("Please specify a Scene class name.")
-    else:
+        st.error("⚠️ Please specify a Scene class name.")
+    elif scene_name not in code_input:
+        st.error(f"⚠️ Scene class '{scene_name}' not found in your code. Please check the class name.")
+    elif scene_candidates and scene_name not in scene_candidates:
+        st.warning(f"⚠️ Warning: '{scene_name}' may not be a valid Scene class. Detected classes: {', '.join(scene_candidates)}")
+        st.info("Attempting to render anyway...")
+
+    if code_input.strip() and scene_name and scene_name in code_input:
         # Prepare code (add import if missing)
         final_code = ensure_manim_import(code_input)
 
@@ -462,7 +846,7 @@ if render_button:
         try:
             ast.parse(final_code)
         except SyntaxError as e:
-            st.error(f"Syntax error in your code at line {e.lineno}: {e.msg}")
+            st.error(f"❌ Syntax error in your code at line {e.lineno}: {e.msg}")
             st.stop()
 
         # Count animations for progress tracking
@@ -473,8 +857,19 @@ if render_button:
         script_path = temp_dir / "scene.py"
 
         # UI elements for progress (defined outside try for cleanup)
+        with st.spinner("⏳ Initializing render..."):
+            time.sleep(0.3)  # Brief loading indicator
+
         status_text = st.empty()
         progress_bar = st.progress(0)
+
+        # Stop button
+        stop_button_placeholder = st.empty()
+        if st.session_state.render_active:
+            if stop_button_placeholder.button("🛑 Stop Render", key="stop_render"):
+                st.session_state.render_active = False
+                st.warning("⏹️ Stopping render...")
+                st.rerun()
 
         try:
             # Write code to file
@@ -506,22 +901,30 @@ if render_button:
                 status_text=status_text,
             )
 
-            # Clear progress UI
-            status_text.empty()
-            progress_bar.empty()
+            # Keep progress UI visible for a moment before clearing
+            time.sleep(0.5)
 
             # Find video file
             video_file = find_video_file(temp_dir)
             
             if success and video_file and video_file.exists():
                 # SUCCESS - Show video and download
-                st.success("Render Successful!")
+                st.success("✅ Render Successful!")
 
                 # Read video bytes BEFORE cleanup
                 video_bytes = video_file.read_bytes()
 
-                # Video preview
-                st.video(video_bytes)
+                # Video preview with size control
+                if video_width < 100:
+                    col_vid1, col_vid2, col_vid3 = st.columns([
+                        (100 - video_width) // 2,
+                        video_width,
+                        (100 - video_width) // 2
+                    ])
+                    with col_vid2:
+                        st.video(video_bytes)
+                else:
+                    st.video(video_bytes)
 
                 # Download button  
                 st.download_button(
@@ -532,7 +935,7 @@ if render_button:
                 )
 
                 # Logs (collapsed)
-                with st.expander("Render Logs"):
+                with st.expander("📋 Render Logs", expanded=False):
                     st.code(log_output, language="text")
                     
             elif success and not video_file:
@@ -543,25 +946,25 @@ if render_button:
                     if f.is_file():
                         debug_info += f"  {f}\n"
                 
-                st.error("Render completed but video file was not found.")
-                with st.expander("Render Logs", expanded=True):
+                st.error("❌ Render completed but video file was not found.")
+                with st.expander("📋 Render Logs", expanded=True):
                     st.code(log_output + debug_info, language="text")
             else:
                 # FAILED - Show error and logs
-                st.error("Render Failed!")
-                with st.expander("Render Logs", expanded=True):
+                st.error("❌ Render Failed!")
+                with st.expander("📋 Render Logs", expanded=True):
                     st.code(log_output, language="text")
 
         except subprocess.TimeoutExpired:
             status_text.empty()
             progress_bar.empty()
-            st.error(f"Render timed out after {TIMEOUT_SECONDS // 60} minutes.")
+            st.error(f"⏱️ Render timed out after {TIMEOUT_SECONDS} seconds ({TIMEOUT_SECONDS // 60} minutes).")
         except Exception as e:
             status_text.empty()
             progress_bar.empty()
-            st.error(f"An unexpected error occurred: {str(e)}")
+            st.error(f"❌ An unexpected error occurred: {str(e)}")
             import traceback
-            with st.expander("Error Details", expanded=True):
+            with st.expander("🔍 Error Details", expanded=True):
                 st.code(traceback.format_exc(), language="text")
         finally:
             # Always cleanup temp directory
