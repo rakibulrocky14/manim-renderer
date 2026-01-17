@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-fonts-recommended \
     texlive-science \
     latexmk \
+    dvisvgm \
     && rm -rf /var/lib/apt/lists/*
 
 # Work Directory
