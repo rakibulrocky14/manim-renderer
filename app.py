@@ -1,11 +1,10 @@
-import streamlit as st
-import subprocess
-import sys
+import ast
 import os
-import re
-import glob
 import shutil
+import subprocess
 from pathlib import Path
+
+import streamlit as st
 
 # --- Configuration ---
 TEMP_DIR = Path("/tmp/manim")
@@ -18,52 +17,59 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS for Elegant Look ---
-st.markdown("""
+st.markdown(
+    """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
+
     .stApp {
-        background-color: #f8f9fa;
+        background: radial-gradient(circle at 10% 20%, rgba(255, 244, 235, 0.9), transparent 50%),
+                    linear-gradient(180deg, #f7f8fb 0%, #eef1f6 100%);
+        color: #1f2a37;
     }
     .main .block-container {
         padding-top: 2rem;
-        padding-bottom: 2rem;
+        padding-bottom: 2.5rem;
         max-width: 1200px;
     }
-    h1 {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        font-weight: 700;
-        color: #2c3e50;
+    body, div, p, label, input, textarea {
+        font-family: 'Manrope', sans-serif;
     }
-    h3 {
-        font-weight: 600;
-        color: #34495e;
+    h1, h2, h3 {
+        font-family: 'Playfair Display', serif;
+        font-weight: 700;
+        color: #1f2a37;
     }
     .stButton>button {
-        background-color: #ff4b4b;
+        background: linear-gradient(135deg, #ff6b6b, #ff4b4b);
         color: white;
-        border-radius: 8px;
-        padding: 0.5rem 2rem;
+        border-radius: 10px;
+        padding: 0.6rem 2.2rem;
         font-weight: 600;
         border: none;
         transition: all 0.3s ease;
+        box-shadow: 0 10px 20px rgba(255, 75, 75, 0.2);
     }
     .stButton>button:hover {
-        background-color: #ff3333;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(255, 75, 75, 0.3);
     }
     .stTextArea textarea {
-        font-family: 'Source Code Pro', monospace;
-        border-radius: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        border-radius: 12px;
         border: 1px solid #e0e0e0;
+        background-color: #fbfbfd;
     }
     div[data-testid="stExpander"] {
         border: none;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
         background-color: white;
-        border-radius: 8px;
+        border-radius: 12px;
     }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
 # --- Helper Functions ---
 def clean_temp_dir():
@@ -72,46 +78,71 @@ def clean_temp_dir():
         shutil.rmtree(TEMP_DIR)
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-def find_video_file(output_dir):
+
+def find_video_file(output_dir: Path) -> Path | None:
     """Recursively finds the mp4 file in the output directory."""
     mp4_files = list(output_dir.glob("**/*.mp4"))
-    # Filter out partial movie files if any
     valid_files = [f for f in mp4_files if "partial_movie_files" not in str(f)]
     if valid_files:
-        # Return the most recently modified file
         return max(valid_files, key=os.path.getmtime)
     return None
 
-def get_quality_flag(quality_label):
+
+def get_quality_flag(quality_label: str) -> str:
     mapping = {
         "Low (480p, Fast)": "-ql",
         "Medium (720p, Standard)": "-qm",
         "High (1080p, HD)": "-qh",
         "Extra High (1440p)": "-qp",
-        "4K (2160p)": "-qk"
+        "4K (2160p)": "-qk",
     }
     return mapping.get(quality_label, "-qm")
+
+
+def extract_scene_classes(source_code: str) -> list[str]:
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return []
+
+    scene_classes: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id == "Scene":
+                scene_classes.append(node.name)
+            elif isinstance(base, ast.Attribute) and base.attr == "Scene":
+                scene_classes.append(node.name)
+    return scene_classes
+
 
 # --- UI Layout ---
 
 with st.sidebar:
     st.title("⚙️ Settings")
-    
-    scene_name = st.text_input("Scene Class Name", value="Scene", help="The name of the class in your code that you want to render.")
-    
+
     quality = st.selectbox(
         "Render Quality",
-        ["Low (480p, Fast)", "Medium (720p, Standard)", "High (1080p, HD)", "Extra High (1440p)", "4K (2160p)"],
-        index=1
+        [
+            "Low (480p, Fast)",
+            "Medium (720p, Standard)",
+            "High (1080p, HD)",
+            "Extra High (1440p)",
+            "4K (2160p)",
+        ],
+        index=1,
     )
-    
-    st.info("""
+
+    st.info(
+        """
     **Instructions:**
     1. Paste your Manim code on the right.
-    2. Ensure your Scene class name matches the input above.
+    2. Choose the Scene class to render.
     3. Click 'Render Scene'.
-    """)
-    
+    """
+    )
+
     st.markdown("---")
     st.markdown("Made with ❤️ using Manim & Streamlit")
 
@@ -120,20 +151,26 @@ st.markdown("### Paste your code below and bring your math to life.")
 
 default_code = """from manim import *
 
-class Scene(Scene):
+class DemoScene(Scene):
     def construct(self):
         circle = Circle()
         circle.set_fill(PINK, opacity=0.5)
-        
+
         square = Square()
         square.set_fill(BLUE, opacity=0.5)
         square.next_to(circle, RIGHT, buff=0.5)
-        
+
         self.play(Create(circle), Create(square))
         self.wait()
 """
 
 code_input = st.text_area("Python Code", value=default_code, height=400)
+
+scene_candidates = extract_scene_classes(code_input)
+if not scene_candidates:
+    scene_candidates = ["DemoScene"]
+
+scene_name = st.selectbox("Scene Class", scene_candidates)
 
 col1, col2 = st.columns([1, 4])
 with col1:
