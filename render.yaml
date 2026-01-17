@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: manim-render-studio
+    runtime: docker
+    plan: starter
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
