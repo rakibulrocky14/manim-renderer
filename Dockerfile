@@ -22,8 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-science \
     texlive-latex-recommended \
     latexmk \
-    # Required for dvi to svg conversion
+    # Required for dvi to svg/png conversion
     dvisvgm \
+    dvipng \
     # Additional tools
     cm-super \
     && apt-get clean \

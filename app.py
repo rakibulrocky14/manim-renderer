@@ -32,85 +32,51 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
 
     .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        background-attachment: fixed;
+        background: radial-gradient(circle at 10% 20%, rgba(255, 244, 235, 0.9), transparent 50%),
+                    linear-gradient(180deg, #f7f8fb 0%, #eef1f6 100%);
+        color: #1f2a37;
     }
     .main .block-container {
         padding-top: 2rem;
         padding-bottom: 2.5rem;
-        max-width: 1100px;
+        max-width: 1200px;
     }
-    [data-testid="stSidebar"] {
-        background: rgba(255,255,255,0.95);
-        backdrop-filter: blur(10px);
-    }
-    [data-testid="stSidebar"] h1 {
-        color: #1f2937 !important;
-    }
-    body, div, p, label, input, textarea, span {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    body, div, p, label, input, textarea {
+        font-family: 'Manrope', sans-serif;
     }
     h1, h2, h3 {
-        font-family: 'Inter', sans-serif !important;
-        font-weight: 700 !important;
-        color: #ffffff !important;
-    }
-    .stMarkdown p, .stMarkdown h3 {
-        color: rgba(255,255,255,0.9) !important;
+        font-family: 'Playfair Display', serif;
+        font-weight: 700;
+        color: #1f2a37;
     }
     .stButton>button {
-        background: linear-gradient(135deg, #ff6b6b, #ee5a5a);
+        background: linear-gradient(135deg, #ff6b6b, #ff4b4b);
         color: white;
-        border-radius: 12px;
-        padding: 0.75rem 2.5rem;
+        border-radius: 10px;
+        padding: 0.6rem 2.2rem;
         font-weight: 600;
-        font-size: 1rem;
         border: none;
         transition: all 0.3s ease;
-        box-shadow: 0 8px 24px rgba(238, 90, 90, 0.4);
+        box-shadow: 0 10px 20px rgba(255, 75, 75, 0.2);
     }
     .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 12px 32px rgba(238, 90, 90, 0.5);
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(255, 75, 75, 0.3);
     }
     .stTextArea textarea {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
-        font-size: 14px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         border-radius: 12px;
-        border: 2px solid rgba(255,255,255,0.2);
-        background-color: rgba(15, 23, 42, 0.95);
-        color: #e2e8f0;
-        padding: 1rem;
-    }
-    .stTextArea textarea:focus {
-        border-color: #667eea;
-        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.3);
-    }
-    .stSelectbox > div > div {
-        background-color: rgba(255,255,255,0.95);
-        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        background-color: #fbfbfd;
     }
     div[data-testid="stExpander"] {
         border: none;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-        background-color: rgba(255,255,255,0.95);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+        background-color: white;
         border-radius: 12px;
-        backdrop-filter: blur(10px);
-    }
-    .stVideo {
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-    }
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #10b981, #059669);
-        box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4);
-    }
-    .stDownloadButton > button:hover {
-        box-shadow: 0 12px 32px rgba(16, 185, 129, 0.5);
     }
     </style>
     """,
@@ -192,24 +158,20 @@ with st.sidebar:
         index=1,
     )
 
-    st.markdown("---")
-
-    st.markdown(
+    st.info(
         """
-    **How to use:**
-    1. Paste your Manim code
-    2. Select the Scene class
-    3. Click Render
-    
-    **Supported:**
-    - LaTeX / MathTex
-    - All Manim CE features
-    - Up to 10 min render time
+    **Instructions:**
+    1. Paste your Manim code on the right.
+    2. Select the Scene class to render.
+    3. Click 'Render Scene'.
     """
     )
 
+    st.markdown("---")
+    st.markdown("Made with Manim & Streamlit")
+
 st.title("Manim Render Studio")
-st.markdown("#### Paste your Manim code and render beautiful math animations")
+st.markdown("### Paste your code below and bring your math to life.")
 
 default_code = '''from manim import *
 
@@ -229,27 +191,23 @@ class DemoScene(Scene):
         self.play(FadeOut(circle), FadeOut(square))
 '''
 
-code_input = st.text_area("Python Code", value=default_code, height=350)
+code_input = st.text_area("Python Code", value=default_code, height=400)
 
 # Auto-detect scene classes
 scene_candidates = extract_scene_classes(code_input)
 
-col1, col2 = st.columns([2, 3])
+if scene_candidates:
+    scene_name = st.selectbox("Scene Class (auto-detected)", scene_candidates)
+else:
+    scene_name = st.text_input(
+        "Scene Class Name",
+        value="DemoScene",
+        help="Could not auto-detect. Enter the class name manually.",
+    )
 
+col1, col2 = st.columns([1, 4])
 with col1:
-    if scene_candidates:
-        scene_name = st.selectbox("Scene Class (auto-detected)", scene_candidates)
-    else:
-        scene_name = st.text_input(
-            "Scene Class Name",
-            value="DemoScene",
-            help="Could not auto-detect. Enter the class name manually.",
-        )
-
-with col2:
-    st.write("")  # Spacer
-    st.write("")
-    render_button = st.button("Render Scene", type="primary", use_container_width=True)
+    render_button = st.button("Render Scene")
 
 if render_button:
     if not code_input.strip():
@@ -257,6 +215,13 @@ if render_button:
     elif not scene_name:
         st.error("Please specify a Scene class name.")
     else:
+        # Check for syntax errors first
+        try:
+            ast.parse(code_input)
+        except SyntaxError as e:
+            st.error(f"Syntax error in your code at line {e.lineno}: {e.msg}")
+            st.stop()
+
         # Prepare workspace
         clean_temp_dir()
         script_path = TEMP_DIR / "temp_script.py"
@@ -279,57 +244,51 @@ if render_button:
             "--disable_caching",
         ]
 
-        # UI Feedback
-        progress_bar = st.progress(0, text="Initializing render engine...")
+        # Run render with spinner
+        with st.spinner("Rendering your animation... This may take a moment."):
+            try:
+                process = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SECONDS,
+                    cwd=str(TEMP_DIR),
+                )
 
-        log_expander = st.expander("Render Logs", expanded=True)
+                # Show logs
+                log_output = process.stdout + "\n" + process.stderr
 
-        try:
-            progress_bar.progress(10, text="Starting Manim renderer...")
+                if process.returncode == 0:
+                    video_file = find_video_file(TEMP_DIR)
 
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SECONDS,
-                cwd=str(TEMP_DIR),
-            )
+                    if video_file and video_file.exists():
+                        st.success("Render Successful!")
+                        st.video(str(video_file))
 
-            # Show logs
-            log_output = process.stdout + "\n" + process.stderr
-            with log_expander:
-                st.code(log_output, language="text")
+                        # Download button
+                        with open(video_file, "rb") as v:
+                            st.download_button(
+                                label="Download Video",
+                                data=v,
+                                file_name=f"{scene_name}.mp4",
+                                mime="video/mp4",
+                            )
 
-            if process.returncode == 0:
-                progress_bar.progress(90, text="Render complete! Loading video...")
-
-                video_file = find_video_file(TEMP_DIR)
-
-                if video_file and video_file.exists():
-                    progress_bar.progress(100, text="Done!")
-
-                    st.success("Render Successful!")
-                    st.video(str(video_file))
-
-                    # Download button
-                    with open(video_file, "rb") as v:
-                        st.download_button(
-                            label="Download Video",
-                            data=v,
-                            file_name=f"{scene_name}.mp4",
-                            mime="video/mp4",
-                            use_container_width=True,
+                        # Show logs in collapsed expander on success
+                        with st.expander("Render Logs"):
+                            st.code(log_output, language="text")
+                    else:
+                        st.error(
+                            "Render finished but video file was not found. Check logs for details."
                         )
+                        with st.expander("Render Logs", expanded=True):
+                            st.code(log_output, language="text")
                 else:
-                    progress_bar.progress(100, text="Error")
-                    st.error(
-                        "Render finished but video file was not found. Check logs for details."
-                    )
-            else:
-                progress_bar.progress(100, text="Render failed")
-                st.error("Render Failed. Check the logs above for details.")
+                    st.error("Render Failed. Check the logs below for details.")
+                    with st.expander("Render Logs", expanded=True):
+                        st.code(log_output, language="text")
 
-        except subprocess.TimeoutExpired:
-            st.error(f"Render timed out after {TIMEOUT_SECONDS // 60} minutes.")
-        except Exception as e:
-            st.error(f"An unexpected error occurred: {str(e)}")
+            except subprocess.TimeoutExpired:
+                st.error(f"Render timed out after {TIMEOUT_SECONDS // 60} minutes.")
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {str(e)}")
